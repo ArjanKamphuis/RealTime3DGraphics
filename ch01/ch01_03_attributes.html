@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="ie=edge">
+    <title>Real-Time 3D Graphics with WebGL2</title>
+    <link rel="icon" type="image/png" href="/common/images/favicon.png" />
+    <script>
+        'use strict';
+
+        let gl;
+
+        function updateClearColor(...color) {
+            gl.clearColor(...color);
+            gl.clear(gl.COLOR_BUFFER_BIT);
+            gl.viewport(0, 0, 0, 0);
+        }
+
+        function checkKey(e) {
+            switch (e.key) {
+                case '1': updateClearColor(0.2, 0.8, 0.2, 1.0); break;
+                case '2': updateClearColor(0.2, 0.2, 0.8, 1.0); break;
+                case '3': updateClearColor(Math.random(), Math.random(), Math.random(), 1.0); break;
+                case '4': {
+                    const color = gl.getParameter(gl.COLOR_CLEAR_VALUE);
+                    console.log(`clearColor = (${color[0].toFixed(1)}, ${color[1].toFixed(1)}, ${color[2].toFixed(1)})`);
+                    window.focus();
+                    break;
+                }
+                default: return;
+            }
+        }
+
+        window.addEventListener('load', () => {
+            const canvas = document.getElementById('webgl-canvas');
+            if (!canvas) {
+                console.error('Sorry! No HTML5 Canvas was found on this page.');
+                return;
+            }
+
+            gl = canvas.getContext('webgl2');
+            console.log(gl  ? 'Hooray! You got a WebGl2 context.' : 'Sorry! WebGL is not available.');
+
+            window.addEventListener('keydown', checkKey);
+        });
+    </script>
+</head>
+<body>
+    <canvas id="webgl-canvas" width="800" height="600" style="border: 5px dotted blue">
+        Your browser does not support the HTML5 canvas element.
+    </canvas>
+</body>
+</html>
