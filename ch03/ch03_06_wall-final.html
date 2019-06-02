@@ -200,15 +200,6 @@
             }
         }
 
-        function animate() {
-            let timeNow = new Date().getTime();
-            if (lastTime) {
-                const dt = timeNow - lastTime;
-                angle += (rotSpeed * dt) / 1000.0;
-            }
-            lastTime = timeNow;
-        }
-
         function render() {
             draw();
             requestAnimationFrame(render);

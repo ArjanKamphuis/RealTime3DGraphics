@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="ie=edge">
+    <title>Real-Time 3D Graphics with WebGL2</title>
+    <link rel="icon" type="image/png" href="/common/images/favicon.png">
+    <link rel="stylesheet" href="/common/lib/normalize.css">
+    <link rel="stylesheet" href="/common/lib/otherstyles.css">
+    <script src="/common/lib/dat.gui.js"></script>
+    <script src="/common/lib/gl-matrix.js"></script>
+    <script src="/common/js/utils.js"></script>
+
+    <script id="vertex-shader" type="x-shader/x-vertex">
+        #version 300 es
+        precision mediump float;
+
+        uniform mat4 uModelViewMatrix, uProjectionMatrix, uNormalMatrix;
+        uniform vec3 uLightPosition;
+
+        in vec3 aVertexPosition, aVertexNormal;
+        out vec3 vNormal, vLightRay, vEyeVector;
+
+        void main(void) {
+            vec4 vertex = uModelViewMatrix * vec4(aVertexPosition, 1.0);
+            vec4 light = vec4(uLightPosition, 1.0);
+
+            vNormal = vec3(uNormalMatrix * vec4(aVertexNormal, 1.0));
+            vLightRay = vertex.xyz - light.xyz;
+            vEyeVector = -vec3(vertex.xyz);
+
+            gl_Position = uProjectionMatrix * vertex;
+        }
+    </script>
+    
+    <script id="fragment-shader" type="x-shader/x-fragment">
+        #version 300 es
+        precision mediump float;
+
+        uniform float uShininess;
+        uniform vec3 uLightAmbient, uMaterialDiffuse, uMaterialSpecular;
+
+        in vec3 vNormal, vLightRay, vEyeVector;
+        out vec4 fragColor;
+
+        void main(void) {
+            vec3 L = normalize(vLightRay);
+            vec3 N = normalize(vNormal);
+            float lambertTerm = dot(N, -L);
+            vec3 finalColor = uLightAmbient;
+
+            if (lambertTerm > 0.0) {
+                finalColor += uMaterialDiffuse * lambertTerm;
+                vec3 E = normalize(vEyeVector);
+                vec3 R = reflect(L, N);
+                float specular = pow(max(dot(R, E), 0.0), uShininess);
+                finalColor += uMaterialSpecular * specular;
+            }
+            
+            fragColor = vec4(finalColor, 1.0);
+        }
+    </script>
+
+    <script>
+        'use strict';
+
+        let gl, program,
+            clearColor = [0.9, 0.9, 0.9],
+            parts = [],
+            angle = 0,
+            rotSpeed = 90,
+            lastTime = 0,
+            distance = -120,
+            shininess = 24,
+            lightPosition = [100, 400, 100],
+            projectionMatrix = mat4.create(),
+            modelViewMatrix = mat4.create(),
+            normalMatrix = mat4.create();
+
+        function initProgram() {
+            const canvas = utils.getCanvas('webgl-canvas');
+            utils.autoResizeCanvas(canvas);
+
+            gl = utils.getGLContext(canvas);
+            gl.clearColor(...clearColor, 1);
+            gl.enable(gl.DEPTH_TEST);
+            gl.depthFunc(gl.LEQUAL);
+
+            const vertexShader = utils.getShader(gl, 'vertex-shader');
+            const fragmentShader = utils.getShader(gl, 'fragment-shader');
+
+            program = gl.createProgram();
+            gl.attachShader(program, vertexShader);
+            gl.attachShader(program, fragmentShader);
+            gl.linkProgram(program);
+
+            if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+                console.error('Could not initialize shaders');
+            }
+
+            gl.useProgram(program);
+
+            program.aVertexPosition = gl.getAttribLocation(program, 'aVertexPosition');
+            program.aVertexNormal = gl.getAttribLocation(program, 'aVertexNormal');
+            program.uProjectionMatrix = gl.getUniformLocation(program, 'uProjectionMatrix');
+            program.uModelViewMatrix = gl.getUniformLocation(program, 'uModelViewMatrix');
+            program.uNormalMatrix = gl.getUniformLocation(program, 'uNormalMatrix');
+            program.uMaterialDiffuse = gl.getUniformLocation(program, 'uMaterialDiffuse');
+            program.uMaterialSpecular = gl.getUniformLocation(program, 'uMaterialSpecular');
+            program.uShininess = gl.getUniformLocation(program, 'uShininess');
+            program.uLightPosition = gl.getUniformLocation(program, 'uLightPosition');
+            program.uLightAmbient = gl.getUniformLocation(program, 'uLightAmbient');
+        }
+
+        function initLights() {
+            gl.uniform3fv(program.uLightPosition, lightPosition);
+            gl.uniform3f(program.uLightAmbient, 0.1, 0.1, 0.1);
+            gl.uniform3f(program.uMaterialDiffuse, 1, 1, 1);
+            gl.uniform3f(program.uMaterialSpecular, 0.5, 0.5, 0.5);
+            gl.uniform1f(program.uShininess, shininess);
+        }
+
+        function load() {
+            for (let i = 1; i < 179; i++) {
+                fetch(`/common/models/nissan-gtr/part${i}.json`)
+                    .then(res => res.json())
+                    .then(part => {
+                        const vao = gl.createVertexArray();
+                        gl.bindVertexArray(vao);
+
+                        const vertexBufferObject = gl.createBuffer();
+                        gl.bindBuffer(gl.ARRAY_BUFFER, vertexBufferObject);
+                        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(part.vertices), gl.STATIC_DRAW);
+                        gl.enableVertexAttribArray(program.aVertexPosition);
+                        gl.vertexAttribPointer(program.aVertexPosition, 3, gl.FLOAT, false, 0, 0);
+
+                        const normalBufferObject = gl.createBuffer();
+                        gl.bindBuffer(gl.ARRAY_BUFFER, normalBufferObject);
+                        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(utils.calculateNormals(part.vertices, part.indices)), gl.STATIC_DRAW);
+                        gl.enableVertexAttribArray(program.aVertexNormal);
+                        gl.vertexAttribPointer(program.aVertexNormal, 3, gl.FLOAT, false, 0, 0);
+
+                        const indexBufferObject = gl.createBuffer();
+                        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBufferObject);
+                        gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(part.indices), gl.STATIC_DRAW);
+
+                        part.vao = vao;
+                        part.ibo = indexBufferObject;
+
+                        parts.push(part);
+
+                        gl.bindVertexArray(null);
+                        gl.bindBuffer(gl.ARRAY_BUFFER, null);
+                        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null);
+                    })
+                    .catch(console.error);
+            }
+        }
+
+        function draw() {
+            gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+            gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
+
+            mat4.perspective(projectionMatrix, 45, gl.canvas.width / gl.canvas.height, 10, 10000);
+            mat4.identity(modelViewMatrix);
+            mat4.translate(modelViewMatrix, modelViewMatrix, [0, 0, distance]);
+            mat4.rotate(modelViewMatrix, modelViewMatrix, 20 * Math.PI / 180, [1, 0, 0]);
+            mat4.rotate(modelViewMatrix, modelViewMatrix, angle * Math.PI / 180, [0, 1, 0]);
+
+            mat4.copy(normalMatrix, modelViewMatrix);
+            mat4.invert(normalMatrix, normalMatrix);
+            mat4.transpose(normalMatrix, normalMatrix);
+
+            gl.uniformMatrix4fv(program.uProjectionMatrix, false, projectionMatrix);
+            gl.uniformMatrix4fv(program.uModelViewMatrix, false, modelViewMatrix);
+            gl.uniformMatrix4fv(program.uNormalMatrix, false, normalMatrix);
+
+            parts.forEach(part => {
+                gl.bindVertexArray(part.vao);
+                gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, part.ibo);
+                gl.drawElements(gl.TRIANGLES, part.indices.length, gl.UNSIGNED_SHORT, 0);
+            });
+
+            gl.bindVertexArray(null);
+            gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null);
+        }
+
+        function animate() {
+            const timeNow = new Date().getTime();
+            if (lastTime) {
+                const dt = timeNow - lastTime;
+                angle += (rotSpeed * dt) / 10000;
+            }
+            lastTime = timeNow;
+        }
+
+        function render() {
+            animate();
+            draw();
+            requestAnimationFrame(render);
+        }
+
+        window.addEventListener('load', () => {
+            initProgram();
+            initLights();
+            load();
+            render();
+
+            initControls();
+        });
+
+        function initControls() {
+            utils.configureControls({
+                'Car Color': {
+                    value: [255, 255, 255],
+                    onChange: v => gl.uniform3f(program.uMaterialDiffuse, ...utils.normalizeColor(v))
+                },
+                Background: {
+                    value: utils.denormalizeColor(clearColor),
+                    onChange: v => gl.clearColor(...utils.normalizeColor(v), 1.0)
+                },
+                Shininess: {
+                    value: shininess,
+                    min: 1, max: 50, step: 0.1,
+                    onChange: v => gl.uniform1f(program.uShininess, v)
+                },
+                Distance: {
+                    value: distance,
+                    min: -600, max: -80, step: 1,
+                    onChange: v => distance = v
+                },
+                ...['Translate X', 'Translate Y', 'Translate Z'].reduce((result, name, i) => {
+                    result[name] = {
+                        value: lightPosition[i],
+                        min: -1000, max: 1000, step: -0.1,
+                        onChange(v, state) {
+                            gl.uniform3fv(program.uLightPosition, [
+                                state['Translate X'],
+                                state['Translate Y'],
+                                state['Translate Z']
+                            ]);
+                        }
+                    };
+                    return result;
+                }, {}),
+                'Rotation Speed': {
+                    value: rotSpeed,
+                    min: -360, max: 360, step: 10,
+                    onChange: v => rotSpeed = v
+                }
+            });
+        }
+    </script>
+</head>
+<body>
+    <canvas id="webgl-canvas" width="800" height="600">
+        Your browser does not support the HTML5 canvas element.
+    </canvas>
+</body>
+</html>
