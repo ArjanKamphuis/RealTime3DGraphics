@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="ie=edge">
+    <title>Real-Time 3D Graphics with WebGL2</title>
+    <link rel="icon" type="image/png" href="/common/images/favicon.png">
+
+    <link rel="stylesheet" href="/common/lib/normalize.css">
+    <link rel="stylesheet" href="/common/lib/otherstyles.css">
+    <script src="/common/lib/dat.gui.js"></script>
+    <script src="/common/lib/gl-matrix.js"></script>
+
+    <script src="/common/js/utils.js"></script>
+    <script src="/common/js/EventEmitter.js"></script>
+    <script src="/common/js/Program.js"></script>
+    <script src="/common/js/Scene.js"></script>
+    <script src="/common/js/Clock.js"></script>
+    <script src="/common/js/Axis.js"></script>
+    <script src="/common/js/Floor.js"></script>
+    <script src="/common/js/Camera.js"></script>
+    <script src="/common/js/Controls.js"></script>
+
+    <script id="vertex-shader" type="x-shader/x-vertex">
+        #version 300 es
+        precision mediump float;
+
+        uniform mat4 uModelViewMatrix, uProjectionMatrix, uNormalMatrix;
+        uniform vec3 uLightPosition;
+        uniform vec4 uLightAmbient, uLightDiffuse, uMaterialDiffuse;
+        uniform bool uWireframe, uFixedLight;
+
+        in vec3 aVertexPosition, aVertexNormal;
+        in vec4 aVertexColor;
+        out vec4 vFinalColor;
+
+        void main(void) {
+            if (uWireframe) {
+                vFinalColor = uMaterialDiffuse;
+            } else {
+                vec3 N = vec3(uNormalMatrix * vec4(aVertexNormal, 0.0));
+                vec3 L = normalize(-uLightPosition);
+
+                if (uFixedLight) {
+                    L = vec3(uNormalMatrix * vec4(L, 0.0));
+                }
+
+                float lambertTerm = dot(N, -L);
+                if (lambertTerm == 0.0) {
+                    lambertTerm = 0.01;
+                }
+
+                vec4 Ia = uLightAmbient;
+                vec4 Id = uMaterialDiffuse * uLightDiffuse * lambertTerm;
+                vFinalColor = vec4(vec3(Ia + Id), 1.0);
+            }
+
+            gl_Position = uProjectionMatrix * uModelViewMatrix * vec4(aVertexPosition, 1.0);
+        }
+    </script>
+    
+    <script id="fragment-shader" type="x-shader/x-fragment">
+        #version 300 es
+        precision mediump float;
+
+        in vec4 vFinalColor;
+        out vec4 fragColor;
+
+        void main(void) {
+            fragColor = vFinalColor;
+        }
+    </script>
+
+    <script>
+        'use strict';
+
+        let gl, scene, program, camera, clock,
+            fov = 45,
+            fixedLight = false,
+            projectionMatrix = mat4.create(),
+            modelViewMatrix = mat4.create(),
+            normalMatrix = mat4.create(),
+            PERSPECTIVE_PROJECTION = 'Perspective Projection',
+            ORTHOGRAPHIC_PROJECTION = 'Orthographic Projection',
+            projectionMode = PERSPECTIVE_PROJECTION,
+            viewPortSettings = 'One';
+
+        function configure() {
+            const canvas = utils.getCanvas('webgl-canvas');
+            utils.autoResizeCanvas(canvas);
+
+            gl = utils.getGLContext(canvas);
+            gl.clearColor(0.9, 0.9, 0.9, 1);
+            gl.clearDepth(100);
+            gl.enable(gl.DEPTH_TEST);
+            gl.depthFunc(gl.LEQUAL);
+
+            clock = new Clock();
+
+            program = new Program(gl, 'vertex-shader', 'fragment-shader');
+
+            const attributes = [
+                'aVertexPosition',
+                'aVertexNormal',
+                'aVertexColor'
+            ];
+
+            const uniforms = [
+                'uProjectionMatrix',
+                'uModelViewMatrix',
+                'uNormalMatrix',
+                'uLightAmbient',
+                'uLightDiffuse',
+                'uLightPosition',
+                'uMaterialDiffuse',
+                'uWireframe',
+                'uFixedLight'
+            ];
+
+            program.load(attributes, uniforms);
+            scene = new Scene(gl, program);
+
+            camera = new Camera(Camera.ORBITING_TYPE);
+            camera.goHome([0, 20, 120]);
+            new Controls(camera, canvas);
+
+            gl.uniform3fv(program.uLightPosition, [0, 0, 5000]);
+            gl.uniform4fv(program.uLightAmbient, [0.1, 0.1, 0.1, 1]);
+            gl.uniform4fv(program.uLightDiffuse, [0.7, 0.7, 0.7, 1]);
+            gl.uniform1i(program.uFixedLight, fixedLight);
+
+            initTransforms();
+        }
+
+        function load() {
+            scene.add(new Floor(2000, 100));
+            scene.add(new Axis(2000));
+            scene.loadByParts('/common/models/nissan-gtr/part', 178);
+        }
+
+        function initTransforms() {
+            modelViewMatrix = camera.getViewTransform();
+            mat4.identity(projectionMatrix);
+            updateTransforms();
+
+            mat4.identity(normalMatrix);
+            mat4.copy(normalMatrix, modelViewMatrix);
+            mat4.invert(normalMatrix, normalMatrix);
+            mat4.transpose(normalMatrix, normalMatrix);
+        }
+
+        function updateTransforms() {
+            const { width, height } = gl.canvas;
+            if (projectionMode === PERSPECTIVE_PROJECTION) {
+                mat4.perspective(projectionMatrix, fov, width / height, 1, 5000);
+            } else {
+                mat4.ortho(projectionMatrix, -width / fov, width / fov, -height / fov, height / fov, -5000, 5000);
+            }
+        }
+
+        function setMatrixUniforms() {
+            gl.uniformMatrix4fv(program.uProjectionMatrix, false, projectionMatrix);
+            gl.uniformMatrix4fv(program.uModelViewMatrix, false, camera.getViewTransform());
+            mat4.transpose(normalMatrix, camera.matrix);
+            gl.uniformMatrix4fv(program.uNormalMatrix, false, normalMatrix);
+        }
+
+        function draw() {
+            gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+            switch (viewPortSettings) {
+                case 'Two': gl.viewport(0, 0, gl.canvas.width / 2, gl.canvas.height / 2); break;
+                case 'Three': gl.viewport(gl.canvas.width / 2, gl.canvas.height / 2, gl.canvas.width, gl.canvas.height); break;
+                case 'Four': gl.viewport(50, 50, gl.canvas.width - 100, gl.canvas.height - 100); break;
+                default: gl.viewport(0, 0, gl.canvas.width, gl.canvas.height); break;
+            }
+
+            try {
+                updateTransforms();
+                setMatrixUniforms();
+
+                scene.traverse(object => {
+                    gl.uniform4fv(program.uMaterialDiffuse, object.diffuse);
+                    gl.uniform1i(program.uWireframe, object.wireframe);
+
+                    gl.bindVertexArray(object.vao);
+                    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, object.ibo);
+
+                    gl.drawElements((object.wireframe ? gl.LINES : gl.TRIANGLES), object.indices.length, gl.UNSIGNED_SHORT, 0);
+                });
+            } catch (error) {
+                console.error(error);
+            }
+
+            gl.bindVertexArray(null);
+            gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null);
+        }
+
+        window.addEventListener('load', () => {
+            configure();
+            load();
+            clock.on('tick', draw);
+
+            initTable();
+            initControls();
+        });
+
+        function initTable() {
+            const tbody = document.createElement('tbody');
+            for (let i = 0; i < 4; i++) {
+                const tr = document.createElement('tr');
+                for (let j = 0; j < 4; j++) {
+                    let td = document.createElement('td');
+                    td.setAttribute('id', `m${i + j * 4}`);
+                    tr.appendChild(td);
+                }
+                tbody.appendChild(tr);
+            }
+            document.getElementById('matrix').appendChild(tbody);
+        }
+
+        function initControls() {
+            utils.configureControls({
+                'Camera Type': {
+                    value: camera.type,
+                    options: [Camera.TRACKING_TYPE, Camera.ORBITING_TYPE],
+                    onChange: v => {
+                        camera.goHome();
+                        camera.setType(v);
+                    }
+                },
+                'Projection Mode': {
+                    value: projectionMode,
+                    options: [PERSPECTIVE_PROJECTION, ORTHOGRAPHIC_PROJECTION],
+                    onChange: v => projectionMode = v
+                },
+                'Viewport Settings': {
+                    value: viewPortSettings,
+                    options: ['One', 'Two', 'Three', 'Four'],
+                    onChange: v => viewPortSettings = v
+                },
+                fov: {
+                    value: fov,
+                    min: 1, max: 200, step: 1,
+                    onChange: v => fov = v
+                },
+                Dolly: {
+                    value: 0,
+                    min: -100, max: 100, step: 0.1,
+                    onChange: v => camera.dolly(v)
+                },
+                Position: {
+                    ...['X', 'Y', 'Z'].reduce((result, name, i) => {
+                        result[name] = {
+                            value: camera.position[i],
+                            min: -100, max: 100, step: 0.1,
+                            onChange: (v, state) => {
+                                camera.setPosition([state.X, state.Y, state.Z]);
+                            }
+                        };
+                        return result;
+                    }, {})
+                },
+                Rotation: {
+                    Elevation: {
+                        value: camera.elevation,
+                        min: -180, max: 180, step: 0.1,
+                        onChange: v => camera.setElevation(v)
+                    },
+                    Azimuth: {
+                        value: camera.azimuth,
+                        min: -180, max: 180, step: 0.1,
+                        onChange: v => camera.setAzimuth(v)
+                    }
+                },
+                'Static Light Position': {
+                    value: fixedLight,
+                    onChange: v => gl.uniform1i(program.uFixedLight, v)
+                },
+                'Go Home': () => camera.goHome()
+            });
+
+            clock.on('tick', () => {
+                camera.matrix.forEach((data, i) => {
+                    document.getElementById(`m${i}`).innerText = data.toFixed(1);
+                });
+            });
+        }
+    </script>
+</head>
+<body>
+    <canvas id="webgl-canvas" width="800" height="600">
+        Your browser does not support the HTML5 canvas element.
+    </canvas>
+
+    <div id="info">
+        <p>Camera Matrix</p>
+        <table id="matrix"></table>
+    </div>
+</body>
+</html>

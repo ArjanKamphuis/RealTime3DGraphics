@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="ie=edge">
+    <title>Real-Time 3D Graphics with WebGL2</title>
+    <link rel="icon" type="image/png" href="/common/images/favicon.png">
+
+    <link rel="stylesheet" href="/common/lib/normalize.css">
+    <link rel="stylesheet" href="/common/lib/otherstyles.css">
+    <script src="/common/lib/dat.gui.js"></script>
+    <script src="/common/lib/gl-matrix.js"></script>
+
+    <script src="/common/js/utils.js"></script>
+    <script src="/common/js/EventEmitter.js"></script>
+    <script src="/common/js/Program.js"></script>
+    <script src="/common/js/Scene.js"></script>
+    <script src="/common/js/Clock.js"></script>
+    <script src="/common/js/Axis.js"></script>
+    <script src="/common/js/Floor.js"></script>
+    <script src="/common/js/Camera.js"></script>
+    <script src="/common/js/Controls.js"></script>
+    <script src="/common/js/Transforms.js"></script>
+
+    <script id="vertex-shader" type="x-shader/x-vertex">
+        #version 300 es
+        precision mediump float;
+
+        uniform mat4 uModelViewMatrix, uProjectionMatrix, uNormalMatrix;
+        uniform vec3 uLightPosition;
+        uniform vec4 uMaterialDiffuse;
+        uniform bool uWireframe, uUpdateLight;
+
+        in vec3 aVertexPosition, aVertexNormal;
+        in vec4 aVertexColor;
+
+        out vec3 vNormal, vLightRay, vEyeVector;
+        out vec4 vFinalColor;
+
+        void main(void) {
+            if (uWireframe) {
+                vFinalColor = uMaterialDiffuse;
+            }
+
+            vec4 vertex = uModelViewMatrix * vec4(aVertexPosition, 1.0);
+            vec4 light = vec4(uLightPosition, 1.0);
+
+            if (uUpdateLight) {
+                light = uModelViewMatrix * vec4(uLightPosition, 1.0);
+            }
+
+            vNormal = vec3(uNormalMatrix * vec4(aVertexNormal, 1.0));
+            vLightRay = vertex.xyz - light.xyz;
+            vEyeVector = -vec3(vertex.xyz);
+            gl_Position = uProjectionMatrix * uModelViewMatrix * vec4(aVertexPosition, 1.0);
+        }
+    </script>
+    
+    <script id="fragment-shader" type="x-shader/x-fragment">
+        #version 300 es
+        precision mediump float;
+
+        uniform bool uWireframe;
+        uniform vec4 uLightAmbient, uLightDiffuse, uLightSpecular, uMaterialAmbient, uMaterialDiffuse, uMaterialSpecular;
+        uniform float uShininess;
+
+        in vec3 vNormal, vLightRay, vEyeVector;
+        in vec4 vFinalColor;
+
+        out vec4 fragColor;
+
+        void main(void) {
+            if (uWireframe) {
+                fragColor = vFinalColor;
+            } else {
+                vec3 N = normalize(vNormal);
+                vec3 L = normalize(vLightRay);
+
+                float lambertTerm = dot(N, -L);
+
+                vec4 Ia = uLightAmbient * uMaterialAmbient;
+                vec4 Id = vec4(0.0, 0.0, 0.0, 1.0);
+                vec4 Is = vec4(0.0, 0.0, 0.0, 1.0);
+
+                if (lambertTerm > 0.0) {
+                    Id = uLightDiffuse * uMaterialDiffuse * lambertTerm;
+                    vec3 E = normalize(vEyeVector);
+                    vec3 R = reflect(L, N);
+                    float specular = pow(max(dot(R, E), 0.0), uShininess);
+                    Is = uLightSpecular * uMaterialSpecular * specular;
+                }
+
+                fragColor = vec4(vec3(Ia + Id + Is), 1.0);
+            }
+        }
+    </script>
+
+    <script>
+        'use strict';
+
+        let gl, scene, program, camera, transforms, dt, initialTime,
+            fixedLight = false,
+            balls = [],
+            sceneTime = 0,
+            animationRate = 15,
+            gravity = 9.8,
+            ballsCount = 50;
+
+        class BouncingBall {
+            constructor() {
+                this.position = generatePosition();
+
+                this.H0 = this.position[1];
+                this.V0 = 0;
+                this.VF = Math.sqrt(2 * gravity * this.H0);
+                this.HF = 0;
+
+                this.bouncingTime = 0;
+                this.BOUNCINESS = Math.random() + 0.5;
+
+                this.color = [Math.random(), Math.random(), Math.random(), 1];
+            }
+            
+            update(time) {
+                const t = time - this.bouncingTime;
+                const h = this.H0 + (this.V0 * t) - (0.5 * gravity * t * t);
+
+                if (h <= 0) {
+                    this.bouncingTime = time;
+                    this.V0 = this.VF * this.BOUNCINESS;
+                    this.HF = (this.V0 * this.V0) / (2 * gravity);
+                    this.VF = Math.sqrt(2 * gravity * this.HF);
+                    this.H0 = 0;
+                } else {
+                    this.position[1] = h;
+                }
+            }
+        }
+
+        function generatePosition() {
+            return [
+                Math.floor(Math.random() * 50) - Math.floor(Math.random() * 50),
+                Math.floor(Math.random() * 30) + 50,
+                Math.floor(Math.random() * 50)
+            ];
+        }
+
+        function configure() {
+            const canvas = utils.getCanvas('webgl-canvas');
+            utils.autoResizeCanvas(canvas);
+
+            gl = utils.getGLContext(canvas);
+            gl.clearColor(0.9, 0.9, 0.9, 1);
+            gl.clearDepth(100);
+            gl.enable(gl.DEPTH_TEST);
+            gl.depthFunc(gl.LEQUAL);
+
+            program = new Program(gl, 'vertex-shader', 'fragment-shader');
+
+            const attributes = [
+                'aVertexPosition',
+                'aVertexNormal',
+                'aVertexColor'
+            ];
+
+            const uniforms = [
+                'uProjectionMatrix',
+                'uModelViewMatrix',
+                'uNormalMatrix',
+                'uMaterialDiffuse',
+                'uMaterialAmbient',
+                'uMaterialSpecular',
+                'uLightAmbient',
+                'uLightDiffuse',
+                'uLightSpecular',
+                'uLightPosition',
+                'uShininess',
+                'uWireframe',
+                'uUpdateLight'
+            ];
+
+            program.load(attributes, uniforms);
+            scene = new Scene(gl, program);
+
+            camera = new Camera(Camera.ORBITING_TYPE);
+            camera.goHome([0, 2, 70]);
+            camera.setFocus([0, 0, 0]);
+            new Controls(camera, canvas);
+
+            transforms = new Transforms(gl, program, camera, canvas);
+
+            gl.uniform3fv(program.uLightPosition, [0, 120, 120]);
+            gl.uniform4fv(program.uLightAmbient, [0.2, 0.2, 0.2, 1]);
+            gl.uniform4fv(program.uLightDiffuse, [1, 1, 1, 1]);
+            gl.uniform4fv(program.uLightSpecular, [1, 1, 1, 1]);
+            gl.uniform1f(program.uShininess, 230);
+        }
+
+        function load() {
+            scene.add(new Floor(80, 2));
+            for (let i = 0; i < ballsCount; i++) {
+                balls.push(new BouncingBall());
+                scene.load('/common/models/geometries/ball.json', `ball${i}`);
+            }
+        }
+
+        function draw() {
+            gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+            gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
+
+            transforms.updatePerspective();
+
+            try {
+                gl.uniform1i(program.uUpdateLight, fixedLight);
+
+                scene.traverse(object => {
+                    transforms.calculateModelView();
+                    transforms.push();
+
+                    if (~object.alias.indexOf('ball')) {
+                        const index = parseInt(object.alias.substring(4, 8));
+                        const ballTransform = transforms.modelViewMatrix;
+                        mat4.translate(ballTransform, ballTransform, balls[index].position);
+                        object.diffuse = balls[index].color;
+                    }
+
+                    transforms.setMatrixUniforms();
+                    transforms.pop();
+
+                    gl.uniform4fv(program.uMaterialDiffuse, object.diffuse);
+                    gl.uniform4fv(program.uMaterialSpecular, object.specular);
+                    gl.uniform4fv(program.uMaterialAmbient, object.ambient);
+                    gl.uniform1i(program.uWireframe, object.wireframe);
+
+                    gl.bindVertexArray(object.vao);
+                    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, object.ibo);
+
+                    gl.drawElements((object.wireframe ? gl.LINES : gl.TRIANGLES), object.indices.length, gl.UNSIGNED_SHORT, 0);
+                });
+            } catch (error) {
+                console.error(error);
+            }
+
+            gl.bindVertexArray(null);
+            gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null);
+        }
+
+        function animate() {
+            balls.forEach(ball => ball.update(sceneTime));
+            sceneTime += 33 / 1000;
+            draw();
+        }
+
+        function onFrame() {
+            dt = (new Date).getTime() - initialTime;
+            if (dt < animationRate) return;
+
+            let steps = Math.floor(dt / animationRate);
+            while (steps > 0) {
+                animate();
+                steps -= 1;
+            }
+
+            initialTime = (new Date).getTime();
+        }
+
+        function render() {
+            initialTime = (new Date).getTime();
+            setInterval(onFrame, animationRate / 1000);
+        }
+
+        window.addEventListener('load', () => {
+            configure();
+            load();
+            render();
+
+            initControls();
+        });
+
+        function initControls() {
+            utils.configureControls({
+                'Camera Type': {
+                    value: camera.type,
+                    options: [Camera.TRACKING_TYPE, Camera.ORBITING_TYPE],
+                    onChange: v => {
+                        camera.goHome();
+                        camera.setType(v);
+                    }
+                },
+                'Static Light Position': {
+                    value: fixedLight,
+                    onChange: v => fixedLight = v
+                },
+                'Go Home': () => camera.goHome()
+            });
+        }
+    </script>
+</head>
+<body>
+    <canvas id="webgl-canvas" width="800" height="600">
+        Your browser does not support the HTML5 canvas element.
+    </canvas>
+</body>
+</html>

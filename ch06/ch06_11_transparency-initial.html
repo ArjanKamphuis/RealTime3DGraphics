@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="ie=edge">
+    <title>Real-Time 3D Graphics with WebGL2</title>
+    <link rel="icon" type="image/png" href="/common/images/favicon.png">
+
+    <link rel="stylesheet" href="/common/lib/normalize.css">
+    <link rel="stylesheet" href="/common/lib/otherstyles.css">
+    <script src="/common/lib/dat.gui.js"></script>
+    <script src="/common/lib/gl-matrix.js"></script>
+
+    <script src="/common/js/utils.js"></script>
+    <script src="/common/js/EventEmitter.js"></script>
+    <script src="/common/js/Clock.js"></script>
+    <script src="/common/js/Program.js"></script>
+    <script src="/common/js/Scene.js"></script>
+    <script src="/common/js/Floor.js"></script>
+    <script src="/common/js/Camera.js"></script>
+    <script src="/common/js/Controls.js"></script>
+    <script src="/common/js/Transforms.js"></script>
+
+    <script id="vertex-shader" type="x-shader/x-vertex">
+        #version 300 es
+        precision mediump float;
+
+        uniform mat4 uModelViewMatrix, uProjectionMatrix, uNormalMatrix;
+        uniform vec3 uLightPosition;
+        uniform vec4 uMaterialDiffuse;
+
+        in vec3 aVertexPosition, aVertexNormal;
+        in vec4 aVertexColor;
+
+        out vec3 vNormal, vLightRay;
+        out vec4 vFinalColor;
+
+        void main(void) {
+            vec4 vertex = uModelViewMatrix * vec4(aVertexPosition, 1.0);
+            vNormal = vec3(uNormalMatrix * vec4(aVertexNormal, 1.0));
+            vec4 lightPosition = vec4(uLightPosition, 1.0);
+            vLightRay = vertex.xyz - lightPosition.xyz;
+            vFinalColor = uMaterialDiffuse;
+            gl_Position = uProjectionMatrix * uModelViewMatrix * vec4(aVertexPosition, 1.0);
+        }
+    </script>
+    
+    <script id="fragment-shader" type="x-shader/x-fragment">
+        #version 300 es
+        precision mediump float;
+
+        uniform vec4 uMaterialDiffuse, uMaterialAmbient, uLightAmbient, uLightDiffuse;
+        uniform bool uWireframe;
+
+        in vec3 vNormal, vLightRay;
+        in vec4 vFinalColor;
+
+        out vec4 fragColor;
+
+        void main(void) {
+            if (uWireframe) {
+                fragColor = vFinalColor;
+            } else {
+                vec3 L = normalize(vLightRay);
+                vec3 N = normalize(vNormal);
+                float lambertTerm = clamp(dot(N, -L), 0.0, 1.0);
+                vec4 Ia = uLightAmbient * uMaterialAmbient;
+                vec4 Id = uLightDiffuse * uMaterialDiffuse * lambertTerm;
+                fragColor = vec4(Ia.rgb + Id.rgb, uMaterialDiffuse.a);
+            }
+        }
+    </script>
+
+    <script>
+        'use strict';
+
+        let gl, scene, program, camera, transforms, clock;
+
+        function configure() {
+            const canvas = utils.getCanvas('webgl-canvas');
+            utils.autoResizeCanvas(canvas);
+
+            gl = utils.getGLContext(canvas);
+            gl.clearColor(0.9, 0.9, 0.9, 1);
+            gl.clearDepth(1);
+            gl.enable(gl.DEPTH_TEST);
+            gl.depthFunc(gl.LESS);
+
+            program = new Program(gl, 'vertex-shader', 'fragment-shader');
+
+            const attributes = [
+                'aVertexPosition',
+                'aVertexNormal',
+                'aVertexColor'
+            ];
+
+            const uniforms = [
+                'uProjectionMatrix',
+                'uModelViewMatrix',
+                'uNormalMatrix',
+                'uMaterialDiffuse',
+                'uMaterialAmbient',
+                'uLightAmbient',
+                'uLightDiffuse',
+                'uLightPosition',
+                'uWireframe'
+            ];
+
+            program.load(attributes, uniforms);
+            clock = new Clock();
+            scene = new Scene(gl, program);
+
+            camera = new Camera(Camera.ORBITING_TYPE);
+            camera.goHome([0, 5, 35]);
+            camera.setFocus([0, 0, 0]);
+            camera.setAzimuth(-47);
+            camera.setElevation(-3);
+            new Controls(camera, canvas);
+
+            transforms = new Transforms(gl, program, camera, canvas);
+
+            gl.uniform3fv(program.uLightPosition, [0, 7, 3]);
+            gl.uniform4fv(program.uLightAmbient, [1, 1, 1, 1]);
+            gl.uniform4fv(program.uLightDiffuse, [1, 1, 1, 1]);
+        }
+
+        function load() {
+            scene.add(new Floor(80, 20));
+            scene.load('/common/models/geometries/cone3.json', 'cone');
+            scene.load('/common/models/geometries/wall.json', 'wall', { 'diffuse': [0.5, 0.5, 0.2, 1.0], 'ambient': [0.2, 0.2, 0.2, 1.0] });
+        }
+
+        function draw() {
+            gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+            gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
+            transforms.updatePerspective();
+
+            try {
+                scene.traverse(object => {
+                    transforms.calculateModelView();
+                    transforms.push();
+
+                    if (object.alias === 'cone') {
+                        mat4.translate(transforms.modelViewMatrix, transforms.modelViewMatrix, [0, 0, -5]);
+                    }
+                    if (object.alias === 'wall') {
+                        mat4.translate(transforms.modelViewMatrix, transforms.modelViewMatrix, [0, 0, 5]);
+                    }
+
+                    transforms.setMatrixUniforms();
+                    transforms.pop();
+
+                    gl.uniform1i(program.uWireframe, object.wireframe);
+                    gl.uniform4fv(program.uMaterialDiffuse, object.diffuse);
+                    gl.uniform4fv(program.uMaterialAmbient, object.ambient);
+
+                    gl.bindVertexArray(object.vao);
+                    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, object.ibo);
+
+                    gl.drawElements((object.wireframe ? gl.LINES : gl.TRIANGLES), object.indices.length, gl.UNSIGNED_SHORT, 0);
+                });
+            } catch (error) {
+                console.error(error);
+            }
+
+            gl.bindVertexArray(null);
+            gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null);
+        }
+
+        window.addEventListener('load', () => {
+            configure();
+            load();
+            clock.on('tick', draw);
+
+            initControls();
+        });
+
+        function initControls() {
+            utils.configureControls({
+                'Camera Type': {
+                    value: camera.type,
+                    options: [Camera.ORBITING_TYPE, Camera.TRACKING_TYPE],
+                    onChange: v => {
+                        camera.goHome();
+                        camera.setType(v);
+                    }
+                },
+                'Render Order': {
+                    value: 'Cone First',
+                    options: ['Cone First', 'Wall First'],
+                    onChange: v => {
+                        if (v === 'Wall First') {
+                            scene.renderSooner('wall');
+                            scene.renderFirst('floor');
+                        } else {
+                            scene.renderSooner('cone');
+                            scene.renderFirst('floor');
+                        }
+                    }
+                },
+                ...[
+                    { name: 'Wall Alpha', id: 'wall' },
+                    { name: 'Cone Alpha', id: 'cone' }
+                ].reduce((result, { name, id }) => {
+                    result[name] = {
+                        value: 1,
+                        min: 0, max: 1, step: 0.1,
+                        onChange: v => scene.get(id).diffuse[3] = v
+                    };
+                    return result;
+                }, {}),
+                'Go Home': () => {
+                    camera.goHome();
+                    camera.setType(Camera.ORBITING_TYPE);
+                }
+            });
+        }
+    </script>
+</head>
+<body>
+    <canvas id="webgl-canvas" width="800" height="600">
+        Your browser does not support the HTML5 canvas element.
+    </canvas>
+</body>
+</html>

@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="ie=edge">
+    <title>Real-Time 3D Graphics with WebGL2</title>
+    <link rel="icon" type="image/png" href="/common/images/favicon.png">
+
+    <link rel="stylesheet" href="/common/lib/normalize.css">
+    <link rel="stylesheet" href="/common/lib/otherstyles.css">
+    <script src="/common/lib/dat.gui.js"></script>
+    <script src="/common/lib/gl-matrix.js"></script>
+
+    <script src="/common/js/utils.js"></script>
+    <script src="/common/js/EventEmitter.js"></script>
+    <script src="/common/js/Clock.js"></script>
+    <script src="/common/js/Program.js"></script>
+    <script src="/common/js/Scene.js"></script>
+    <script src="/common/js/Camera.js"></script>
+    <script src="/common/js/Controls.js"></script>
+    <script src="/common/js/Transforms.js"></script>
+
+    <script id="vertex-shader" type="x-shader/x-vertex">
+        #version 300 es
+        precision mediump float;
+
+        uniform mat4 uModelViewMatrix, uProjectionMatrix, uNormalMatrix;
+        uniform vec3 uLightPosition;
+        uniform vec4 uMaterialDiffuse, uMaterialAmbient, uLightAmbient, uLightDiffuse;
+        uniform float uAlpha;
+
+        in vec3 aVertexPosition;
+        in vec4 aVertexColor;
+
+        out vec4 vColor;
+
+        void main(void) {
+            vec4 vertex = uModelViewMatrix * vec4(aVertexPosition, 1.0);
+            float lambertTerm = 1.0;
+
+            vec4 Ia = uLightAmbient * uMaterialAmbient;
+            vec4 Id = uLightDiffuse * aVertexColor * lambertTerm;
+
+            vColor = vec4(vec3(Ia + Id), uAlpha);
+            gl_Position = uProjectionMatrix * uModelViewMatrix * vec4(aVertexPosition, 1.0);
+        }
+    </script>
+    
+    <script id="fragment-shader" type="x-shader/x-fragment">
+        #version 300 es
+        precision mediump float;
+
+        uniform vec4 uMaterialDiffuse;
+        uniform bool uWireframe;
+
+        in vec4 vColor;
+
+        out vec4 fragColor;
+
+        void main(void) {
+            if (uWireframe) {
+                fragColor = uMaterialDiffuse;
+            } else {
+                fragColor = vColor;
+            }
+        }
+    </script>
+
+    <script>
+        'use strict';
+
+        let gl, scene, program, camera, transforms, clock,
+            blendingEquation,
+            blendingSource,
+            blendingTarget,
+            blendingColor = [0, 1, 0],
+            blendingAlpha = 1,
+            showFrontFace = true,
+            showBackFace = true;
+
+        function configure() {
+            const canvas = utils.getCanvas('webgl-canvas');
+            utils.autoResizeCanvas(canvas);
+
+            gl = utils.getGLContext(canvas);
+            gl.clearColor(0.9, 0.9, 0.9, 1);
+            gl.clearDepth(1);
+            gl.enable(gl.DEPTH_TEST);
+            gl.depthFunc(gl.LESS);
+            gl.enable(gl.BLEND);
+            gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+            gl.blendColor(...blendingColor.concat(blendingAlpha));
+            gl.enable(gl.CULL_FACE);
+
+            blendingEquation = gl.FUNC_ADD;
+            blendingSource = gl.SRC_ALPHA;
+            blendingTarget = gl.ONE_MINUS_SRC_ALPHA;
+
+            program = new Program(gl, 'vertex-shader', 'fragment-shader');
+
+            const attributes = [
+                'aVertexPosition',
+                'aVertexColor'
+            ];
+
+            const uniforms = [
+                'uProjectionMatrix',
+                'uModelViewMatrix',
+                'uNormalMatrix',
+                'uMaterialDiffuse',
+                'uMaterialAmbient',
+                'uLightAmbient',
+                'uLightDiffuse',
+                'uLightPosition',
+                'uWireframe',
+                'uAlpha'
+            ];
+
+            program.load(attributes, uniforms);
+            clock = new Clock();
+            scene = new Scene(gl, program);
+
+            camera = new Camera(Camera.ORBITING_TYPE);
+            camera.goHome([0, 0, 4]);
+            camera.setFocus([0, 0, 0]);
+            camera.setAzimuth(50);
+            camera.setElevation(-30);
+            new Controls(camera, canvas);
+
+            transforms = new Transforms(gl, program, camera, canvas);
+
+            gl.uniform3fv(program.uLightPosition, [0, 5, 20]);
+            gl.uniform4fv(program.uLightAmbient, [1, 1, 1, 1]);
+            gl.uniform4fv(program.uLightDiffuse, [1, 1, 1, 1]);
+            gl.uniform1f(program.uAlpha, 0.5);
+        }
+
+        function load() {
+            scene.load('/common/models/geometries/cube-complex.json', 'cube');
+        }
+
+        function draw() {
+            gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+            gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
+            transforms.updatePerspective();
+
+            try {
+                scene.traverse(object => {
+                    transforms.calculateModelView();
+                    transforms.setMatrixUniforms();
+
+                    gl.uniform1i(program.uWireframe, object.wireframe);
+                    gl.uniform4fv(program.uMaterialDiffuse, object.diffuse);
+                    gl.uniform4fv(program.uMaterialAmbient, object.ambient);
+
+                    gl.bindVertexArray(object.vao);
+                    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, object.ibo);
+
+                    if (object.wireframe) {
+                        gl.drawElements(gl.LINES, object.indices.length, gl.UNSIGNED_SHORT, 0);
+                    } else {
+                        if (showBackFace) {
+                            gl.cullFace(gl.FRONT);
+                            gl.drawElements(gl.TRIANGLES, object.indices.length, gl.UNSIGNED_SHORT, 0);
+                        }
+                        if (showFrontFace) {
+                            gl.cullFace(gl.BACK);
+                            gl.drawElements(gl.TRIANGLES, object.indices.length, gl.UNSIGNED_SHORT, 0);
+                        }
+                    }
+                });
+            } catch (error) {
+                console.error(error);
+            }
+
+            gl.bindVertexArray(null);
+            gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null);
+        }
+
+        window.addEventListener('load', () => {
+            configure();
+            load();
+            clock.on('tick', draw);
+
+            initControls();
+        });
+
+        function initControls() {
+            const blendFuncs = [
+                'ZERO',
+                'ONE',
+                'SRC_COLOR',
+                'DST_COLOR',
+                'SRC_ALPHA',
+                'DST_ALPHA',
+                'CONSTANT_COLOR',
+                'CONSTANT_ALPHA',
+                'ONE_MINUS_SRC_ALPHA',
+                'ONE_MINUS_DST_ALPHA',
+                'ONE_MINUS_SRC_COLOR',
+                'ONE_MINUS_DST_COLOR',
+                'ONE_MINUS_CONSTANT_COLOR',
+                'ONE_MINUS_CONSTANT_ALPHA'
+            ];
+
+            const getState = v => v ? 'enable' : 'disable';
+
+            function updateBlending(value = true) {
+                gl[value ? 'enable' : 'disable'](gl.BLEND);
+                gl.blendFunc(blendingSource, blendingTarget);
+                gl.blendEquation(blendingEquation);
+                gl.blendColor(...blendingColor.concat(blendingAlpha));
+            }
+                    
+            utils.configureControls({
+                'Alpha Blending': {
+                    value: true,
+                    onChange: updateBlending
+                },
+                'Render Front Face': {
+                    value: showFrontFace,
+                    onChange: v => showFrontFace = v
+                },
+                'Render Back Face': {
+                    value: showBackFace,
+                    onChange: v => showBackFace = v
+                },
+                'Alpha Value': {
+                    value: 0.5,
+                    min: 0, max: 1, step: 0.1,
+                    onChange: v => gl.uniform1f(program.uAlpha, v)
+                },
+                'Blend Function': {
+                    value: 'FUNC_ADD',
+                    options: ['FUNC_ADD', 'FUNC_SUBTRACT', 'FUNC_REVERSE_SUBTRACT'],
+                    onChange: v => {
+                        blendingEquation = gl[v];
+                        updateBlending();
+                    }
+                },
+                Source: {
+                    value: 'SRC_ALPHA',
+                    options: [...blendFuncs, 'SRC_ALPHA_SATURATE'],
+                    onChange: v => {
+                        blendingSource = gl[v];
+                        updateBlending();
+                    }
+                },
+                Destination: {
+                    value: 'ONE_MINUS_SRC_ALPHA',
+                    options: blendFuncs,
+                    onChange: v => {
+                        blendingTarget = gl[v];
+                        updateBlending();
+                    }
+                },
+                'Blending Color': {
+                    value: [0, 0, 0],
+                    onChange: v => {
+                        blendingColor = utils.normalizeColor(v);
+                        updateBlending();
+                    }
+                },
+                'Constant Alpha': {
+                    value: blendingAlpha,
+                    min: 0, max: 1, step: 0.1,
+                    onChange: v => {
+                        blendingAlpha = v;
+                        updateBlending();
+                    }
+                }
+            });
+        }
+    </script>
+</head>
+<body>
+    <canvas id="webgl-canvas" width="800" height="600">
+        Your browser does not support the HTML5 canvas element.
+    </canvas>
+</body>
+</html>

@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="ie=edge">
+    <title>Real-Time 3D Graphics with WebGL2</title>
+    <link rel="icon" type="image/png" href="/common/images/favicon.png">
+
+    <link rel="stylesheet" href="/common/lib/normalize.css">
+    <link rel="stylesheet" href="/common/lib/otherstyles.css">
+    <script src="/common/lib/dat.gui.js"></script>
+    <script src="/common/lib/gl-matrix.js"></script>
+
+    <script src="/common/js/utils.js"></script>
+    <script src="/common/js/Program.js"></script>
+    <script src="/common/js/Scene.js"></script>
+    <script src="/common/js/Axis.js"></script>
+    <script src="/common/js/Floor.js"></script>
+    <script src="/common/js/Camera.js"></script>
+    <script src="/common/js/Controls.js"></script>
+    <script src="/common/js/Transforms.js"></script>
+
+    <script id="vertex-shader" type="x-shader/x-vertex">
+        #version 300 es
+        precision mediump float;
+
+        uniform mat4 uModelViewMatrix, uProjectionMatrix, uNormalMatrix;
+        uniform vec3 uLightPosition;
+        uniform vec4 uMaterialDiffuse;
+        uniform bool uWireframe, uUpdateLight;
+
+        in vec3 aVertexPosition, aVertexNormal;
+        in vec4 aVertexColor;
+
+        out vec3 vNormal, vLightRay, vEyeVector;
+        out vec4 vFinalColor;
+
+        void main(void) {
+            if (uWireframe) {
+                vFinalColor = uMaterialDiffuse;
+            }
+
+            vec4 vertex = uModelViewMatrix * vec4(aVertexPosition, 1.0);
+            vec4 light = vec4(uLightPosition, 1.0);
+
+            if (uUpdateLight) {
+                light = uModelViewMatrix * vec4(uLightPosition, 1.0);
+            }
+
+            vNormal = vec3(uNormalMatrix * vec4(aVertexNormal, 1.0));
+            vLightRay = vertex.xyz - light.xyz;
+            vEyeVector = -vec3(vertex.xyz);
+            gl_Position = uProjectionMatrix * uModelViewMatrix * vec4(aVertexPosition, 1.0);
+        }
+    </script>
+    
+    <script id="fragment-shader" type="x-shader/x-fragment">
+        #version 300 es
+        precision mediump float;
+
+        uniform bool uWireframe;
+        uniform vec4 uLightAmbient, uLightDiffuse, uLightSpecular, uMaterialAmbient, uMaterialDiffuse, uMaterialSpecular;
+        uniform float uShininess;
+
+        in vec3 vNormal, vLightRay, vEyeVector;
+        in vec4 vFinalColor;
+
+        out vec4 fragColor;
+
+        void main(void) {
+            if (uWireframe) {
+                fragColor = vFinalColor;
+            } else {
+                vec3 N = normalize(vNormal);
+                vec3 L = normalize(vLightRay);
+
+                float lambertTerm = dot(N, -L);
+
+                vec4 Ia = uLightAmbient * uMaterialAmbient;
+                vec4 Id = vec4(0.0, 0.0, 0.0, 1.0);
+                vec4 Is = vec4(0.0, 0.0, 0.0, 1.0);
+
+                if (lambertTerm > 0.0) {
+                    Id = uLightDiffuse * uMaterialDiffuse * lambertTerm;
+                    vec3 E = normalize(vEyeVector);
+                    vec3 R = reflect(L, N);
+                    float specular = pow(max(dot(R, E), 0.0), uShininess);
+                    Is = uLightSpecular * uMaterialSpecular * specular;
+                }
+
+                fragColor = vec4(vec3(Ia + Id + Is), 1.0);
+            }
+        }
+    </script>
+
+    <script>
+        'use strict';
+
+        let gl, scene, program, camera, transforms,
+            fixedLight = false,
+            sceneTime = 0,
+            position = [],
+            initialPosition = [-25, 0, 20],
+            finalPosition = [40, 0, -20],
+            incrementSteps = 1000,
+            ballColor = [1, 1, 0, 1],
+            flagStartColor = [0, 1, 0, 1],
+            flagEndColor = [0, 0, 1, 1];
+
+        function configure() {
+            const canvas = utils.getCanvas('webgl-canvas');
+            utils.autoResizeCanvas(canvas);
+
+            gl = utils.getGLContext(canvas);
+            gl.clearColor(0.9, 0.9, 0.9, 1);
+            gl.clearDepth(100);
+            gl.enable(gl.DEPTH_TEST);
+            gl.depthFunc(gl.LEQUAL);
+
+            program = new Program(gl, 'vertex-shader', 'fragment-shader');
+
+            const attributes = [
+                'aVertexPosition',
+                'aVertexNormal',
+                'aVertexColor'
+            ];
+
+            const uniforms = [
+                'uProjectionMatrix',
+                'uModelViewMatrix',
+                'uNormalMatrix',
+                'uMaterialDiffuse',
+                'uMaterialAmbient',
+                'uMaterialSpecular',
+                'uLightAmbient',
+                'uLightDiffuse',
+                'uLightSpecular',
+                'uLightPosition',
+                'uShininess',
+                'uWireframe',
+                'uUpdateLight'
+            ];
+
+            program.load(attributes, uniforms);
+            scene = new Scene(gl, program);
+
+            camera = new Camera(Camera.ORBITING_TYPE);
+            camera.goHome([0, 2, 80]);
+            camera.setElevation(-20);
+            new Controls(camera, canvas);
+
+            transforms = new Transforms(gl, program, camera, canvas);
+
+            gl.uniform3fv(program.uLightPosition, [0, 120, 120]);
+            gl.uniform4fv(program.uLightAmbient, [0.2, 0.2, 0.2, 1]);
+            gl.uniform4fv(program.uLightDiffuse, [1, 1, 1, 1]);
+            gl.uniform4fv(program.uLightSpecular, [1, 1, 1, 1]);
+            gl.uniform1f(program.uShininess, 230);
+        }
+
+        function load() {
+            scene.add(new Floor(80, 2));
+            scene.load('/common/models/geometries/ball.json', 'ball');
+            scene.load('/common/models/geometries/flag.json', 'flagStart');
+            scene.load('/common/models/geometries/flag.json', 'flagEnd');
+            interpolate();
+        }
+
+        function draw() {
+            gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+            gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
+            transforms.updatePerspective();
+
+            try {
+                scene.traverse(object => {
+                    transforms.calculateModelView();
+                    transforms.push();
+                    
+                    const { alias } = object;
+                    if (alias === 'ball') {
+                        mat4.translate(transforms.modelViewMatrix, transforms.modelViewMatrix, position[sceneTime]);
+                        object.diffuse = ballColor;
+                    } else if (alias === 'flagStart') {
+                        mat4.translate(transforms.modelViewMatrix, transforms.modelViewMatrix, initialPosition);
+                        object.diffuse = flagStartColor;
+                    } else if (alias === 'flagEnd') {
+                        mat4.translate(transforms.modelViewMatrix, transforms.modelViewMatrix, finalPosition);
+                        object.diffuse = flagEndColor;
+                    }
+
+                    transforms.setMatrixUniforms();
+                    transforms.pop();
+
+                    gl.uniform1i(program.uUpdateLight, fixedLight);
+                    gl.uniform4fv(program.uMaterialDiffuse, object.diffuse);
+                    gl.uniform4fv(program.uMaterialSpecular, object.specular);
+                    gl.uniform4fv(program.uMaterialAmbient, object.ambient);
+                    gl.uniform1i(program.uWireframe, object.wireframe);
+
+                    gl.bindVertexArray(object.vao);
+                    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, object.ibo);
+
+                    gl.drawElements((object.wireframe ? gl.LINES : gl.TRIANGLES), object.indices.length, gl.UNSIGNED_SHORT, 0);
+                });
+            } catch (error) {
+                console.error(error);
+            }
+
+            gl.bindVertexArray(null);
+            gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null);
+        }
+
+        function interpolate() {
+            const [X0, Y0, Z0] = initialPosition;
+            const [X1, Y1, Z1] = finalPosition;
+
+            const dX = (X1 - X0) / incrementSteps;
+            const dY = (Y1 - Y0) / incrementSteps;
+            const dZ = (Z1 - Z0) / incrementSteps;
+
+            for (let i = 0; i < incrementSteps; i++) {
+                position.push([X0 + (dX * i), Y0 + (dY * i), Z0 + (dZ * i)]);
+            }
+        }
+
+        function animate() {
+            sceneTime += 1;
+            if (sceneTime === incrementSteps) sceneTime = 0;
+            draw();
+        }
+
+        function render() {
+            setInterval(animate, 30 / 1000);
+        }
+
+        window.addEventListener('load', () => {
+            configure();
+            load();
+            render();
+
+            initControls();
+        });
+
+        function initControls() {
+            utils.configureControls({
+                'Camera Type': {
+                    value: camera.type,
+                    options: [Camera.TRACKING_TYPE, Camera.ORBITING_TYPE],
+                    onChange: v => {
+                        camera.goHome();
+                        camera.setType(v);
+                    }
+                },
+                'Static Light Position': {
+                    value: fixedLight,
+                    onChange: v => fixedLight = v
+                },
+                'Go Home': () => camera.goHome()
+            });
+        }
+    </script>
+</head>
+<body>
+    <canvas id="webgl-canvas" width="800" height="600">
+        Your browser does not support the HTML5 canvas element.
+    </canvas>
+</body>
+</html>
