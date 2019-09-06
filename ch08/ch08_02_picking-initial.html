@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="ie=edge">
+    <title>Real-Time 3D Graphics with WebGL2</title>
+    <link rel="icon" type="image/png" href="/common/images/favicon.png">
+
+    <link rel="stylesheet" href="/common/lib/normalize.css">
+    <link rel="stylesheet" href="/common/lib/otherstyles.css">
+    <script src="/common/lib/dat.gui.js"></script>
+    <script src="/common/lib/gl-matrix.js"></script>
+
+    <script src="/common/js/utils.js"></script>
+    <script src="/common/js/EventEmitter.js"></script>
+    <script src="/common/js/Camera.js"></script>
+    <script src="/common/js/Clock.js"></script>
+    <script src="/common/js/Controls.js"></script>
+    <script src="/common/js/Floor.js"></script>
+    <script src="/common/js/Light.js"></script>
+    <script src="/common/js/Picker.js"></script>
+    <script src="/common/js/Program.js"></script>
+    <script src="/common/js/Scene.js"></script>
+    <script src="/common/js/Transforms.js"></script>
+
+    <script id="vertex-shader" type="x-shader/x-vertex">
+        #version 300 es
+        precision mediump float;
+
+        uniform mat4 uModelViewMatrix, uProjectionMatrix, uNormalMatrix;
+        uniform vec3 uLightPosition;
+        uniform vec4 uMaterialDiffuse;
+        uniform bool uWireframe;
+
+        in vec3 aVertexPosition, aVertexNormal;
+        in vec4 aVertexColor;
+
+        out vec3 vNormal, vLightRay, vEyeVector;
+        out vec4 vFinalColor;
+
+        void main(void) {
+            vFinalColor = uMaterialDiffuse;
+
+            vec4 vertex = uModelViewMatrix * vec4(aVertexPosition, 1.0);
+            vNormal = vec3(uNormalMatrix * vec4(aVertexNormal, 1.0));
+            vec4 light = vec4(uLightPosition, 1.0);
+            vLightRay = vertex.xyz - light.xyz;
+            vEyeVector = -vec3(vertex.xyz);
+
+            gl_Position = uProjectionMatrix * uModelViewMatrix * vec4(aVertexPosition, 1.0);
+        }
+    </script>
+    
+    <script id="fragment-shader" type="x-shader/x-fragment">
+        #version 300 es
+        precision mediump float;
+
+        uniform vec4 uMaterialDiffuse, uMaterialAmbient, uLightDiffuse, uLightAmbient, uPickingColor;
+        uniform bool uWireframe, uOffscreen;
+
+        in vec3 vNormal, vLightRay, vEyeVector;
+        in vec4 vFinalColor;
+
+        out vec4 fragColor;
+
+        void main(void) {
+            if (uOffscreen) {
+                fragColor = uPickingColor;
+                return;
+            }
+            
+            if (uWireframe) {
+                fragColor = vFinalColor;
+            } else {
+                vec4 Ia = uLightAmbient * uMaterialAmbient;
+
+                vec3 L = normalize(vLightRay);
+                vec3 N = normalize(vNormal);
+                float lambertTerm = max(dot(N, -L), 0.33);
+                vec4 Id = uLightDiffuse * uMaterialDiffuse * lambertTerm;
+
+                vec3 E = normalize(vEyeVector);
+                vec3 R = reflect(L, N);
+                float specular = pow(max(dot(R, E), 0.5), 50.0);
+                vec4 Is = vec4(0.5) * specular;
+
+                vec4 finalColor = Ia + Id + Is;
+
+                if (uMaterialDiffuse.a != 1.0) {
+                    finalColor.a = uMaterialDiffuse.a;
+                } else {
+                    finalColor.a = 1.0;
+                }
+
+                fragColor = finalColor;
+            }
+        }
+    </script>
+
+    <script>
+        'use strict';
+
+        let gl, scene, program, camera, transforms, clock, controls, picker,
+            showPickingImage = false;
+
+        function configure() {
+            const canvas = utils.getCanvas('webgl-canvas');
+            utils.autoResizeCanvas(canvas);
+
+            gl = utils.getGLContext(canvas);
+            gl.clearColor(0.9, 0.9, 0.9, 1);
+            gl.clearDepth(100);
+            gl.enable(gl.DEPTH_TEST);
+            gl.depthFunc(gl.LESS);
+            gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+            program = new Program(gl, 'vertex-shader', 'fragment-shader');
+
+            const attributes = [
+                'aVertexPosition',
+                'aVertexNormal',
+                'aVertexColor'
+            ];
+
+            const uniforms = [
+                'uProjectionMatrix',
+                'uModelViewMatrix',
+                'uNormalMatrix',
+                'uMaterialDiffuse',
+                'uMaterialAmbient',
+                'uLightAmbient',
+                'uLightDiffuse',
+                'uLightPosition',
+                'uWireframe',
+                'uOffscreen',
+                'uPickingColor'
+            ];
+
+            program.load(attributes, uniforms);
+            clock = new Clock();
+            scene = new Scene(gl, program);
+
+            picker = new Picker(canvas, {
+                hitPropertyCallback: hitProperty,
+                addHitCallback: addHit,
+                moveCallback: movePickedObjects,
+                processHitsCallback: processHits,
+                removeHitCallback: removeHit
+            });
+
+            camera = new Camera(Camera.ORBITING_TYPE);
+            camera.goHome([0, 0, 192]);
+            camera.setFocus([0, 0, 0]);
+            camera.setElevation(-22);
+            camera.setAzimuth(37);
+            controls = new Controls(camera, canvas);
+            controls.setPicker(picker);
+
+            transforms = new Transforms(gl, program, camera, canvas);
+
+            gl.uniform3fv(program.uLightPosition, [0, 5, 20]);
+            gl.uniform4fv(program.uLightAmbient, [0, 0, 0, 1]);
+            gl.uniform4fv(program.uLightDiffuse, [1, 1, 1, 1]);
+        }
+
+        function positionGenerator() {
+            
+        }
+
+        const colorset = {};
+
+        function objectLabelGenerator() {
+            
+        }
+
+        function diffuseColorGenerator(index) {
+            
+        }
+
+        function scaleGenerator() {
+            
+        }
+
+        function hitProperty(obj) {
+            
+        }
+
+        function addHit(obj) {
+            
+        }
+
+        function removeHit(obj) {
+            
+        }
+
+        function processHits(hits) {
+            
+        }
+
+        function movePickedObjects(dx, dy) {
+            
+        }
+
+        function load() {
+            scene.add(new Floor(80, 20));
+        }
+
+        function render() {
+            gl.bindFramebuffer(gl.FRAMEBUFFER, picker.framebuffer);
+            gl.uniform1i(program.uOffscreen, true);
+            draw();
+
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+            gl.uniform1i(program.uOffscreen, false);
+            draw();
+        }
+
+        function draw() {
+            gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+            gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
+            transforms.updatePerspective();
+
+            try {
+                const offscreen = program.getUniform(program.uOffscreen);
+                const flatShadingMode = showPickingImage || offscreen;
+                
+                scene.traverse(object => {
+                    if (object.alias === 'floor' && flatShadingMode) {
+                        return;
+                    }
+
+                    transforms.calculateModelView();
+                    transforms.push();
+
+                    if (object.alias !== 'floor') {
+                        mat4.translate(transforms.modelViewMatrix, transforms.modelViewMatrix, object.position);
+                        mat4.scale(transforms.modelViewMatrix, transforms.modelViewMatrix, object.scale);
+                    }
+
+                    transforms.setMatrixUniforms();
+                    transforms.pop();
+
+                    if (object.diffuse[3] < 1 && !offscreen) {
+                        gl.disable(gl.DEPTH_TEST);
+                        gl.enable(gl.BLEND);
+                    } else {
+                        gl.enable(gl.DEPTH_TEST);
+                        gl.disable(gl.BLEND);
+                    }
+                    
+                    gl.uniform4fv(program.uMaterialDiffuse, object.diffuse);
+                    gl.uniform4fv(program.uMaterialAmbient, object.ambient);
+                    gl.uniform4fv(program.uPickingColor, object.pickingColor || [0, 0, 0, 0]);
+                    gl.uniform1i(program.uWireframe, object.wireframe);
+                    gl.uniform1i(program.uOffscreen, flatShadingMode);
+
+                    gl.bindVertexArray(object.vao);
+                    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, object.ibo);
+
+                    gl.drawElements((object.wireframe ? gl.LINES : gl.TRIANGLES), object.indices.length, gl.UNSIGNED_SHORT, 0);
+                });
+            } catch (error) {
+                console.error(error);
+            }
+
+            gl.bindVertexArray(null);
+            gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null);
+        }
+
+        window.addEventListener('load', () => {
+            configure();
+            load();
+            clock.on('tick', render);
+
+            initControls();
+        });
+
+        function initControls() {
+            utils.configureControls({
+                'Show Picking Image': {
+                    value: showPickingImage,
+                    onChange: v => showPickingImage = v
+                },
+                'Reset Scene': () => {
+                    scene.objects = [];
+                    load();
+                    camera.goHome();
+                    camera.setElevation(-22);
+                    camera.setAzimuth(37);
+                }
+            });
+        }
+    </script>
+</head>
+<body>
+    <canvas id="webgl-canvas" width="800" height="600">
+        Your browser does not support the HTML5 canvas element.
+    </canvas>
+</body>
+</html>
